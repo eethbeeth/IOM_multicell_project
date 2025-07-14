@@ -1,14 +1,11 @@
-% last updated 6/23/25
-% partially vectorized inbr function to save time
-% added colorbar to graph to highlight hub cells
-
+% last updated 7/10/25
+% added hub cells
 clc; clear; close all;
 
-num_cells = 42; 
-% works best when num_cells is a multiple of 3
+num_cells = 125; 
 
 % randomize initial conditions using Gaussian distribution w/ 10 percent SD
-% noise set to 0 for all cells
+% noise IC set to 0 for all cells
 
 yinit = zeros(1,num_cells*8);
 for i = 1:num_cells
@@ -16,9 +13,9 @@ for i = 1:num_cells
     yinit(8*i - 6) = normrnd(0.0001, 0.00001); %n
     yinit(8*i - 5) = normrnd(460.4832, 46.04832); %cer
     yinit(8*i - 4) = normrnd(0.0959, 0.00959); %c
-    yinit(8*i - 3) = normrnd(839.3863, 83.93863); % adp
+    yinit(8*i - 3) = 839.3863; % adp
     yinit(8*i - 2) = normrnd(60.1374,6.01374); %f6p
-    yinit(8*i - 1) = normrnd(110.4577,11.04577); %fbp
+    yinit(8*i - 1) = 110.4577; %fbp
 end 
 
 % alternative idea (TODO?): run 1 simulation of 1 cell, generate random timesteps and
@@ -33,15 +30,14 @@ sigma = 1.0;
 
 layout = WattsStrogatz(num_cells,3,0.9);
 simplify(layout); % removes self-loops and multiple edges between two vertices
-disp("Graph generated")
+% TODO: implement Barabási-Albert model?
 
 % creates unweighted graph with num_cells vertices, where each cell is, on average,
-% connected to 2*(num_cells/3) other vertices. The last input represents
+% connected to 6 other vertices. The last input represents
 % the probability (beta) that an existing edge is swapped, according to the Watts
 % Strogatz algorithm
 % beta = 0 -> ring lattice
 % beta = 1 -> random graph
-% 2/3 to represent that around 65% of cell pairs are coupled 
 % (Smolen, Rinzel, & Sherman 1993)
 
 nbrs = adjacency(layout); 
@@ -58,16 +54,21 @@ for i = 1:num_cells
     num_nbrs(i) = length(neighbors(layout,i));
 end
 
-toss, hub = max(nbrs); % identify which cell is a "hub", 
-% i.e. is connected to the most cells
 
+% identify which cells are the main "hubs", 
+% i.e. are coupled to the most other cells
+% 3 is an arbitrary choice
 
-gc = 175; %gc = 0, gc = 25, gc = 400
+[~, hub] = maxk(num_nbrs, 3); 
+disp(hub + ": hub cell")
+
+gc = 25; %gc = 0, gc = 25, gc = 175, gc = 400
+% islet very hard to excite when coupling strength is high...
 taun = 30; % default: 20 
 sdpct = 10;
 
 % heterogeneous g, gca, gna
-G0 = 15;
+G0 = 18;
 
 sd = sdpct/100*G0;
 G_array = G0 + sd*randn(num_cells, 1);
@@ -83,44 +84,55 @@ gna_array = gna0 + sd*randn(num_cells, 1);
 
 % TODO: add options for ode15s, ode45
 rhs = @(t,y) iom17(t,y,nbrs, gc, taun, G_array, gca_array, gna_array, ...
-    lambda, sigma, dt, num_nbrs, num_cells);
+    lambda, sigma, dt, num_nbrs, num_cells, hub);
 
 tic
-disp("Solving ODE with method heuns")
 [t, y] = heuns(rhs, tspan, yinit, dt);
 disp("Solved!")
 toc
 
 addpath('/Users/eethb/Documents/MATLAB');
-% plot of the graph, vertex = cell, edge = coupling connection
 
+% plot of the graph, vertex = cell, edge = coupling connection
 figure(1);
 colormap copper
 deg = degree(layout);
 nSizes = 2*sqrt(deg-min(deg)+0.2);
 nColors = deg;
-plot(layout,'MarkerSize',nSizes,'NodeCData',nColors,'EdgeAlpha',0.1)
-title('Watts-Strogatz Beta Cell with $N = 120$ nodes, $K = 42$, and $\beta = 0.75$', ...
+plot(layout,'MarkerSize',nSizes,'NodeCData',nColors,'EdgeAlpha',0.1, 'Nodelabel', 1:num_cells)
+title('Watts-Strogatz Beta Cell with $N = 125$ nodes, $K = 3$, and $\beta = 0.9$', ...
     'Interpreter','latex')
 colorbar
 
-% select 4 cells at random, plot Vm and C graphs
+% select 6 cells at random, plot Vm and C graphs
 to_graph = randperm(num_cells);
 
 figure(2); % voltage graphs
 fig_v = tiledlayout(3,3);
-for i = 1:9
+for i = 1:6
     nexttile
     plot(t/1000, y(:,8*to_graph(i)-7))
     title(append('Vm - Cell ',string(to_graph(i))))
 end
 
+for j = 1:3
+    nexttile
+    plot(t/1000,y(:,8*hub(j)-7))
+    title(append('Vm - Cell ',string(hub(j))))
+end
+
 figure(3); % calcium graphs
 fig_c = tiledlayout(3,3);
-for j = 1:9
+for i = 1:6
     nexttile
-    plot(t/1000, y(:,8*to_graph(j)-4))
-    title(append('C - Cell ',string(to_graph(j))))
+    plot(t/1000, y(:,8*to_graph(i)-7))
+    title(append('C - Cell ',string(to_graph(i))))
+end
+
+for j = 1:3
+    nexttile
+    plot(t/1000,y(:,8*hub(j)-7))
+    title(append('C - Cell ',string(hub(j))))
 end
 
 figure(4); % noise current graphs
@@ -131,6 +143,12 @@ for k = 1:9
     title(append('Noise - Cell ',string(to_graph(k))))
 end
 
+threshold = -45; % threshold that determines when a cell is idle/bursting, could be lower?
+% computes times at which the cells burst and the time since the first cell bursts
+[crossings, diff] = v_threshold(y,num_cells,threshold); 
+vbar = compute_vbar(y,num_cells); % computed average voltage of entire islet at each timestep
+figure(5); plot(t/1000,vbar); % plot vbar
+M = plot_bursting(layout, y, num_cells, threshold, crossings); % plots bursting progression
 %===================================================================
 function [t, yout] = heuns(rhs, tspan, yinit, dt)
 
@@ -161,7 +179,7 @@ end
 
 end
 %===================================================================
-function dydt = iom17(t,y,nbrs, gc, taun, G, gca, gna, lambda, sigma, dt, num_nbrs, num_cells)
+function dydt = iom17(t,y,nbrs, gc, taun, G, gca, gna, lambda, sigma, dt, num_nbrs, num_cells, hub)
 
 % Some constants
 
@@ -174,7 +192,12 @@ y = y';
 dydt = zeros(num_cells, num_vars);
 
 atot = 3000;
-vgk=0.005;
+% hub cells observed increase glucokinase rxn rate
+vgk=0.005*ones(num_cells,1);
+for i = 1:length(hub)
+    vgk(hub(i))= 0.005; % silences hub cells by stopping glucokinase rxn
+end
+
 kgk=8.0;
 ngk=1.7;
 Jgk=vgk.*G.^ngk./(G.^ngk + kgk^ngk);
@@ -203,8 +226,8 @@ atp = 0.5*(atot-adp + sqrt(adp*atot).*sqrt(-2+atot./adp-3*adp/atot));
 %       Vector field	   #
 %###########################
 
-dydt(:,1) = (-(ica(v, gca) + ina(v, n, gna) + ik(v,n) + ikca(c,v) + ikatp(adp,atp,v) ...
-         + noise) - inbr(nbrs,num_nbrs, gc,v, num_cells))/Cm; % v
+dydt(:,1) = -(ica(v, gca) + ina(v, n, gna) + ik(v,n) + ikca(c,v) + ikatp(adp,atp,v) ...
+         + noise + inbr(nbrs,num_nbrs, gc,v, num_cells))/Cm; % v
 
 dydt(:,2) = (ninf(v) - n)./taun; % n
 
@@ -228,43 +251,6 @@ dydt(:,8) = -lambda*noise + sqrt(dt)*sigma*randn(num_cells,1); % noise
 dydt = reshape(dydt', [num_cells*num_vars 1]);
 
 end
-
-% function x = nbrs(num_cells)
-% % Creates 5x5x5 cube. Can be modified to create other configurations
-% 
-% edge = nthroot(num_cells,3);
-% face = edge^2;
-% x = zeros(num_cells,num_cells);
-% 
-% for j = 1:num_cells
-%     % right
-%     if mod(j,edge) ~= 0
-%         x(j,j+1) = 1;
-%     end
-%     % left
-%     if mod(j-1,edge) ~= 0
-%         x(j,j-1) = 1;
-%     end
-%     % up
-%     if j <= (num_cells - face)
-%         x(j,j+face) = 1;
-%     end
-%     %down
-%     if j > face
-%         x(j,j-face) = 1;
-%     end
-%     % forward
-%     if mod(j,face) > edge || mod(j,face) == 0
-%         x(j,j - edge) = 1;
-%     end
-%     % backward
-%     if mod(j,face) <= face - edge && mod(j,face) ~= 0
-%         x(j, j + edge) = 1;
-%     end
-% 
-%     x(j,j) = 0;
-% end
-% end
 
 % Isoc
 % vsoc=-20;
@@ -463,4 +449,200 @@ function inbr = inbr(nbrs,num_nbrs, gc,v, num_cells)
     end
 
     inbr = gc * inbr;
+end
+
+%===================================================================
+% computes the average value of v across all cells for each timestep
+function vbar = compute_vbar(y, num_cells)
+    v_only = var_extract(y,num_cells, "v");
+    vbar = NaN(length(y),1);
+
+    for j = 1:length(y)
+        vbar(j) = mean(v_only(j,:));
+    end
+end
+
+%===================================================================
+% creates an array of the values of one particular variable across time
+function one_var = var_extract(y, num_cells, var)
+    one_var = NaN(length(y), num_cells);
+    switch(var)
+        case "v"
+            for i = 1:num_cells
+                one_var(:,i) = y(:,8*i - 7);
+            end
+        case "n"
+            for i = 1:num_cells
+                one_var(:,i) = y(:,8*i - 6);
+            end
+        case "cer"
+            for i = 1:num_cells
+                one_var(:,i) = y(:,8*i - 5);
+            end
+        case "c"
+            for i = 1:num_cells
+                one_var(:,i) = y(:,8*i - 4);
+            end
+        case "adp"
+            for i = 1:num_cells
+                one_var(:,i) = y(:,8*i - 3);
+            end
+        case "f6p"
+            for i = 1:num_cells
+                one_var(:,i) = y(:,8*i - 2);
+            end
+        case "fbp"
+            for i = 1:num_cells
+                one_var(:,i) = y(:,8*i - 1);
+            end
+        case "noise"
+            for i = 1:num_cells
+                one_var(:,i) = y(:,8*i);
+            end
+        otherwise
+            disp("invalid variable")
+    end 
+end
+
+%===================================================================
+function [crossings,diff] = v_threshold(y,num_cells, dta)
+    v = var_extract(y,num_cells,"v");
+    v = v(2001:end, :); % remove first two seconds of data to take out artefacts at start
+    crossings = NaN(1, num_cells);
+    for i = 1:num_cells
+        cross_time = find(v(:,i) > dta, 1, "first");
+        if isempty(cross_time)
+            cross_time = NaN;
+        end
+        crossings(i) = cross_time;
+    end
+    
+    crossings = crossings + 2000; % account for data removal
+    % check if any cells in the islet burst
+    if all(isnan(crossings))
+        disp("This cell did not burst")
+        return;
+    end
+    
+    % identify cells that did not burst
+    if anynan(crossings)
+        for j = 1:length(crossings)
+            if isnan(crossings(j))
+                disp("Cell " + j + " did not burst")
+            end
+        end
+    end
+    
+    % identify first responder
+    [min_time, first_responder] = min(crossings);
+    disp("the first responder is cell " + first_responder + ", bursts at " + min_time/1000 + " seconds")
+
+    % comute average time for a given cell to burst AFTER the first
+    % responder
+    % TODO: add SD, other relevant stats
+
+    diff = (crossings - min_time)/1000;
+    avg_wait = mean(diff, 'omitnan');
+    sd_wait = std(diff, 'omitnan');
+    disp("the average time for a cell to respond is " + avg_wait + " seconds")
+    disp("the standard deviation is " + sd_wait);
+    
+    if ~anynan(diff)
+        figure; histogram(diff,'BinWidth', 0.1);
+    end
+    
+    % identify last responder
+    [max_time, last_responder] = max(crossings);
+    disp("the last responder is cell " + last_responder);
+    
+    % calculate time it takes for the cell to go from completely idle to bursting 
+    duration = (max_time - min_time)/1000;
+    disp("the time it takes for the islet to go from idle to bursting is " + duration + " seconds")
+ 
+end
+%===================================================================
+% Copyright 2015 The MathWorks, Inc.
+function h = WattsStrogatz(N,K,beta)
+
+% H = WattsStrogatz(N,K,beta) returns a Watts-Strogatz model graph with N
+% nodes, N*K edges, mean node degree 2*K, and rewiring probability beta.
+%
+% beta = 0 is a ring lattice, and beta = 1 is a random graph.
+
+% Connect each node to its K next and previous neighbors. This constructs
+% indices for a ring lattice.
+s = repelem((1:N)',1,K);
+t = s + repmat(1:K,N,1);
+t = mod(t-1,N)+1;
+
+% Rewire the target node of each edge with probability beta
+for source=1:N    
+    switchEdge = rand(K, 1) < beta;
+    
+    newTargets = rand(N, 1);
+    newTargets(source) = 0;
+    newTargets(s(t==source)) = 0;
+    newTargets(t(source, ~switchEdge)) = 0;
+    
+    [~, ind] = sort(newTargets, 'descend');
+    t(source, switchEdge) = ind(1:nnz(switchEdge));
+end
+
+h = graph(s,t);
+end
+%===================================================================
+function M = plot_bursting(G, y, num_cells, threshold, crossings)
+    [min_time, ~] = min(crossings);
+    [max_time, ~] = max(crossings);
+    fr = 60;
+    elapsed_time = max_time - min_time;
+   
+    if elapsed_time <= 1000
+        fr = 10;
+    elseif elapsed_time > 1000 && elapsed_time <= 100000
+        fr = 30;
+    end
+
+    v = var_extract(y, num_cells, "v");
+    nColors = zeros(num_cells,3); % RGB data
+    
+    h = figure(6);
+    deg = degree(G);
+    nSizes = 2*sqrt(deg-min(deg)+0.2);
+    
+    plot(G,'MarkerSize',nSizes,'NodeColor',nColors,'EdgeAlpha',0.1, 'Nodelabel', 1:num_cells);
+    % title('Watts-Strogatz Beta Cell with $N = 125$ nodes, $K = 3$, and $\beta = 0.9$', ...
+    % 'Interpreter','latex')
+    axis tight manual
+    ax = gca;
+    ax.NextPlot = 'replaceChildren';
+
+    loops = length((min_time-100):10:(max_time+100));
+    M(loops) = struct('cdata',[],'colormap', []);
+    h.Visible = 'off';
+    
+    cd  '/Users/eethb/Documents/MATLAB'
+    vw = VideoWriter('burst_progression.avi');
+    vw.FrameRate = fr;
+    open(vw);
+    set(gcf, 'renderer', 'zbuffer');
+
+    for j = (min_time-100):10:(max_time+100)
+        idx = 1;
+        for cell = 1:num_cells
+            if v(j,cell) > threshold
+                nColors(cell, 1) = 1; % red
+            end
+        end
+    
+    plot(G,'MarkerSize',nSizes,'NodeColor',nColors,'EdgeAlpha',0.1, 'Nodelabel', 1:num_cells);
+    drawnow
+    M(idx) = getframe(gcf);
+    writeVideo(vw,M(idx));
+    idx = idx + 1;
+    end
+
+    h.Visible = 'on';
+    movie(h,M,1,vw.FrameRate);
+    close(vw);
 end
