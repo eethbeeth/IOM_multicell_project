@@ -1,7 +1,8 @@
-% last updated 7/16/25
+% by: Ethan Eliassen
+% last updated 7/24/25
 clc; clear; close all;
 
-num_cells = 125; 
+num_cells = 125; % num_cells = 25
 
 % randomize initial conditions using Gaussian distribution w/ 10 percent SD
 % noise IC set to 0 for all cells
@@ -30,17 +31,12 @@ end
 % alternative idea (TODO?): run 1 simulation of 1 cell, generate random timesteps and
 % take initial conditions to be the values as these timesteps
 
-tspan = [0 1000000]; % t in msec
+tspan = [0 900000]; % t in msec
 dt = 1;
 
 % Ornstein-Uhlenbeck noise parameters
 lambda = 0.00001;
 sigma = 1.0;
-
-layout = WattsStrogatz(num_cells,3,0.9);
-% layout = Barabasi_Albert(3,num_cells);
-simplify(layout); % removes self-loops and multiple edges between two vertices
-% TODO: implement Barabási-Albert model?
 
 % creates unweighted graph with num_cells vertices, where each cell is, on average,
 % connected to 6 other vertices. The last input represents
@@ -48,14 +44,30 @@ simplify(layout); % removes self-loops and multiple edges between two vertices
 % Strogatz algorithm
 % beta = 0 -> ring lattice
 % beta = 1 -> random graph
-% (Smolen, Rinzel, & Sherman 1993)
+
+layout = WattsStrogatz(num_cells,3,0.9);
+
+% creates unweighted graph according to the Barabási-Albert model
+% starts (for simplicity) with a base graph of 3 interconnected nodes
+% for every node added, it is connected to 3 existing nodes
+% the probability that a new node connects to existing node i is 
+% (number of edges incident to i)/(total number of edges in graph)
+% over time more well-connectedd nodes tend to accumulate more connections
+% ("rich-get-richer" phenomenon)
+% stops adding once num_cells nodes have been added
+% for simplicity a new node cannot connect to itself or to one cell
+% multiple times
+
+% layout = BarabasiAlbert(3,num_cells);
+simplify(layout); % removes self-loops and multiple edges between two vertices
+disp("graph generated")
 
 nbrs = adjacency(layout); 
 
 % adjacency matrix for a graph:
 % nbrs(i,j) = 1 iff there exists an edge between 
 % vertices/nodes i and j in the graph, 0 otherwise
-% all 0's along main diagonal
+% all 0's along main diagonal (since no self-loops)
 
 num_nbrs = zeros(1,num_cells); % number of neighbors per cell, used in inbr
 
@@ -63,18 +75,22 @@ for i = 1:num_cells
     num_nbrs(i) = length(neighbors(layout,i));
 end
 
-
 % identify which cells are the main "hubs", 
 % i.e. are coupled to the most other cells
-% after running many simulations, 2-4 cells usually have >=10 connections
+% after running many simulations (W-S), 2-4 cells usually have >=10 connections
 
 [~, hub] = maxk(num_nbrs, 3); 
 disp(hub + ": hub cell")
 
-gc = 25; %gc = 0, gc = 25, gc = 175, gc = 400
+
+gc = 25.*nbrs; %gc = 0, gc = 25, gc = 175, gc = 400
 % islet very hard to excite when coupling strength is high...
 taun = 30; % default: 20 
 sdpct = 10;
+
+gc(hub,:) = 0;
+gc(:,hub) = 0;
+% SILENCES (hub) cells
 
 % heterogeneous g, gca, gna
 G0 = 20;
@@ -124,7 +140,7 @@ for i = 1:6
     title(append('Vm - Cell ',string(to_graph(i))))
 end
 
-for j = 1:3
+for j = 1:3 % plot hub cell voltage
     nexttile
     plot(t/1000,y(:,8*hub(j)-7))
     title(append('Vm - Cell ',string(hub(j))))
@@ -138,7 +154,7 @@ for i = 1:6
     title(append('C - Cell ',string(to_graph(i))))
 end
 
-for j = 1:3
+for j = 1:3 % plot hub cell calcium
     nexttile
     plot(t/1000,y(:,8*hub(j)-4))
     title(append('C - Cell ',string(hub(j))))
@@ -146,10 +162,16 @@ end
 
 figure(4); % noise current graphs
 fig_noise = tiledlayout(3,3);
-for k = 1:9
+for k = 1:6
     nexttile
     plot(t/1000, y(:,8*to_graph(k)))
     title(append('Noise - Cell ',string(to_graph(k))))
+end
+
+for j = 1:3 % plot hub cell noise
+    nexttile
+    plot(t/1000,y(:,8*hub(j)))
+    title(append('Noise - Cell ',string(hub(j))))
 end
 
 threshold = -45; % threshold that determines when a cell is idle/bursting, could be lower?
@@ -158,8 +180,11 @@ threshold = -45; % threshold that determines when a cell is idle/bursting, could
 vbar = compute_vbar(y,num_cells); % computed average voltage of entire islet at each timestep
 figure(5); plot(t/1000,vbar); % plot vbar
 
-%create movie of bursting progression
-M = plot_bursting(layout, y, num_cells, threshold, crossings); 
+% create movie of bursting progression (black = not bursting, red =
+% bursting)
+if ~isnan(crossings) 
+    M = plot_bursting(layout, y, num_cells, threshold, crossings); 
+end
 %===================================================================
 function [t, yout] = heuns(rhs, tspan, yinit, dt)
 
@@ -206,10 +231,7 @@ atot = 3000;
 % hub cells observed increase glucokinase rxn rate
 % TODO: figure out + implement different (better?) 
 % ways to hyperpolarize/silence cells
-vgk=0.005*ones(num_cells,1);
-for i = 1:length(hub)
-    vgk(hub(i))= 0; % silences hub cells by stopping glucokinase rxn
-end
+vgk=0.005;
 
 kgk=8.0;
 ngk=1.7;
@@ -223,7 +245,7 @@ Cm=5300;
 kgo=1;
 kadp=1;
 
-% NEW: heterogeneous gc
+% heterogeneous gc
 
 % if t > 500000
 %     gc = 50;
@@ -246,7 +268,9 @@ atp = 0.5*(atot-adp + sqrt(adp*atot).*sqrt(-2+atot./adp-3*adp/atot));
 %###########################
 
 dydt(:,1) = -(ica(v, gca) + ina(v, n, gna) + ik(v,n) + ikca(c,v) + ikatp(adp,atp,v) ...
-         + noise + inbr(nbrs,num_nbrs, gc,v, num_cells))/Cm; % v
+         + noise + inbr(gc,v, num_cells))/Cm; % v
+
+% dydt(hub,1) = 0; % HYPERPOLARIZE (hub) cells
 
 dydt(:,2) = (ninf(v) - n)./taun; % n
 
@@ -319,14 +343,12 @@ function x = jmem(c,v,gca)
     
     x = jin - jpmca(c);
 end
-
 %===================================================================
 function x = jserca(c)
     vserca = 0.125;
     kserca = 0.2;
     x = vserca*c.^2./(c.^2 + kserca^2);
 end
-
 %===================================================================
 function x = jer(c,cer)
     pleak = 0.000075; %pleak = 0.00015;
@@ -334,7 +356,6 @@ function x = jer(c,cer)
 
     x = jserca(c) - jleak;
 end
-
 %===================================================================
 function x = jpdh(fbp,c)
     vpdh=0.005;
@@ -347,7 +368,6 @@ function x = jpdh(fbp,c)
 
     x = vpdh*sinfty.*Jgapdh;
 end
-
 %===================================================================
 function x = jprod(fbp,c,adp)    
     % basal and glucose-stimulated ADP phosphorylation rate
@@ -368,28 +388,24 @@ function x = jprod(fbp,c,adp)
     vphos = exp((r + yprime) .* cainh);
     x = (1 - freezeprod)*vphos.*adp + freezeprod*Jprod0;
 end
-
 %===================================================================
 function x = vhydtot(c)
     vhyd=5;
     vhydbas=0.8;
     x = vhydbas + vhyd*(jpmca(c) + jserca(c)/2);
 end
-
 %===================================================================
 function x = ninf(v)
     vn=-16; 
     sn=5; 
     x = 1./(1+exp((vn-v)/sn));
 end
-
 %===================================================================
 function x = ik(v,n)
     vk = -75;
     gk=2700;
     x = gk*n.*(v-vk);
 end
-
 %===================================================================
 function x = ikca(c,v)
     vk = -75;
@@ -401,7 +417,6 @@ function x = ikca(c,v)
     qinf = c.^nkca./(kd^nkca+c.^nkca);
     x = gkca*qinf.*(v-vk);
 end
-
 %===================================================================
 function x = ikatp(adp,atp,v)
     gkatpbar=27000;
@@ -418,7 +433,6 @@ function x = ikatp(adp,atp,v)
     katpo = topo./bottomo;
     x = gkatpbar*katpo.*(v-vk);
 end
-
 %===================================================================
 function output = jpfk(atp,f6p,fbp,adp)
 
@@ -452,24 +466,26 @@ wnof6p = 1 + atp2k4 + fbpk2 + fbpk2./fbt.*atp2k4 + ampk1 + ampk1./fmt.*atp2k4 + 
 output = vpfk.*(wmax + kpfk.*wf6p)./( wmax + wf6p + wnof6p);
 
 end
-
 %===================================================================
-
-function inbr = inbr(nbrs,num_nbrs, gc,v, num_cells)
+function inbr = inbr(gc,v, num_cells)
     % Parameter to represent intercellular electrical coupling
     % gc = 0 => completely independent cell activity ("uncoupled")
     % gc -> infinity => unit acts as one 
     % 25 is (for now) considered "low" coupling, 175 is "high" coupling
 
-    % TODO: further vectorize (if possible?)
     inbr = zeros(num_cells,1);
-    for i = 1:num_cells
-        inbr(i) = (num_nbrs(i) * v(i) - dot(nbrs(i,:), v)); 
+    
+    for j = 1:num_cells
+        inbr(j) = -dot(gc(j,:),v) + v(j)*sum(gc(j,:));
     end
 
-    inbr = gc * inbr;
+    % for j = 1:num_cells
+    %     nbrs_onecell = find(nbrs(j,:));
+    %     for k = 1:num_nbrs(j)
+    %         inbr(j) = inbr(j) + gc(j,nbrs_onecell(k))*(v(nbrs_onecell(k))-v(j));
+    %     end
+    % end
 end
-
 %===================================================================
 % computes the average value of v across all cells for each timestep
 function vbar = compute_vbar(y, num_cells)
@@ -582,9 +598,8 @@ function [crossings,diff] = v_threshold(y,num_cells, dta)
     disp("the average time for a cell to respond is " + avg_wait + " seconds")
     disp("the standard deviation is " + sd_wait);
     
-    if ~anynan(diff)
-        figure; histogram(diff,'BinWidth', 0.1);
-    end
+    figure(6); 
+    histogram(diff(~isnan(diff)),'BinWidth', 0.1);
     
     % identify last responder
     [max_time, last_responder] = max(crossings);
@@ -627,28 +642,26 @@ h = graph(s,t);
 end
 %===================================================================
 function M = plot_bursting(G, y, num_cells, threshold, crossings)
-% TODO: clean up
+% TODO: ensure a movie can be made even if not all cells burst
     [min_time, ~] = min(crossings);
     [max_time, ~] = max(crossings);
     fr = 60;
     elapsed_time = max_time - min_time;
    
     if elapsed_time <= 1000
-        fr = 10;
+        fr = 5;
     elseif elapsed_time > 1000 && elapsed_time <= 100000
-        fr = 30;
+        fr = 15;
     end
 
     v = var_extract(y, num_cells, "v");
     nColors = zeros(num_cells,3); % RGB data
     
-    h = figure(6);
+    h = figure(7);
     deg = degree(G);
     nSizes = 2*sqrt(deg-min(deg)+0.2);
     
     plot(G,'MarkerSize',nSizes,'NodeColor',nColors,'EdgeAlpha',0.1, 'Nodelabel', 1:num_cells);
-    % title('Watts-Strogatz Beta Cell with $N = 125$ nodes, $K = 3$, and $\beta = 0.9$', ...
-    % 'Interpreter','latex')
     axis tight manual
     ax = gca;
     ax.NextPlot = 'replaceChildren';
@@ -683,13 +696,14 @@ function M = plot_bursting(G, y, num_cells, threshold, crossings)
     close(vw);
 end
 %===================================================================
-function G = Barabasi_Albert(m, n)
-    G = graph([1 2 3], [2 3 1]); % start with 3 interconnected nodes
-    connections = zeros(125,1); % number of edges per node
+function G = BarabasiAlbert(m, num_cells)
+    % start with 3 interconnected nodes ("triangle graph")
+    G = graph([1 2 3], [2 3 1]); 
+    connections = zeros(num_cells,1); % number of edges per node
     connections(1:3) = 2; % 2 edges per node to start
-    for i = 4:n
+    for i = 4:num_cells
         total_conns = sum(connections);
-        new_conns = randsample(125,m,true, connections./total_conns);
+        new_conns = randsample(num_cells,m,true, connections./total_conns);
         % add node i to G with connections to nodes in new_conns
         G = addedge(G, i*ones(m,1), new_conns); 
         connections(i) = m;
