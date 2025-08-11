@@ -82,7 +82,7 @@ end
 % i.e. are coupled to the most other cells
 % after running many simulations (W-S), 2-4 cells usually have >=10 connections
 
-[~, hub] = maxk(num_nbrs, 4); 
+[~, hub] = maxk(num_nbrs, 5); 
 disp(hub + ": hub cell")
 
 
@@ -641,6 +641,7 @@ function M = plot_bursting(G, y, num_cells, threshold, crossings, hub)
 % TODO: ensure a movie can be made even if not all cells burst
     if all(isnan(crossings))
         disp("No movie made")
+        M = NaN;
         return
     end
 
