@@ -1,5 +1,5 @@
 % by: Ethan Eliassen
-% last updated 8/11/25
+% last updated 4/27/26
 % un-looped inbr, runs much faster (approx. 5 mins for 125 cells)
 % TODO: detect communities within graph?
 
@@ -34,7 +34,7 @@ end
 % alternative idea (TODO?): run 1 simulation of 1 cell, generate random timesteps and
 % take initial conditions to be the values as these timesteps
 
-tspan = [0 900000]; % t in msec
+tspan = [0 1000000]; % t in msec
 dt = 1;
 
 % Ornstein-Uhlenbeck noise parameters
@@ -48,7 +48,7 @@ sigma = 1.0;
 % beta = 0 -> ring lattice
 % beta = 1 -> random graph
 
-% layout = WattsStrogatz(num_cells,3,0.9);
+% layout = WattsStrogatz(num_cells,3,0.2);
 
 % creates unweighted graph according to the Barabási-Albert model
 % starts (for simplicity) with a base graph of 3 interconnected nodes
@@ -61,39 +61,41 @@ sigma = 1.0;
 % for simplicity a new node cannot connect to itself or to one cell
 % multiple times
 
-layout = BarabasiAlbert(3,num_cells);
-simplify(layout); % removes self-loops and multiple edges between two vertices
-disp("graph generated")
+ % layout = BarabasiAlbert(3,num_cells);
 
-nbrs = adjacency(layout); 
+% simplify(layout); % removes self-loops and multiple edges between two vertices
+% disp("graph generated") % don't need for now, loading graphs in..
+load('isletB.mat', 'nbrs')
+% nbrs = adjacency(layout); 
 
 % adjacency matrix for a graph:
 % nbrs(i,j) = 1 iff there exists an edge between 
 % vertices/nodes i and j in the graph, 0 otherwise
 % all 0's along main diagonal (since no self-loops)
 
-num_nbrs = zeros(1,num_cells); % number of neighbors per cell, used in inbr
+num_nbrs = zeros(1,num_cells); % number of neighbors per cell
 
 for i = 1:num_cells
-    num_nbrs(i) = length(neighbors(layout,i));
+    num_nbrs(i) = sum(nbrs(:,i));
 end
 
 % identify which cells are the main "hubs", 
 % i.e. are coupled to the most other cells
 % after running many simulations (W-S), 2-4 cells usually have >=10 connections
 
-[~, hub] = maxk(num_nbrs, 5); 
+[~, hub] = maxk(num_nbrs, 10); 
 disp(hub + ": hub cell")
 
 
-gc = 25.*nbrs; %gc = 0, gc = 25, gc = 175, gc = 400
+gc = 0.*nbrs; %gc = 0, gc = 25, gc = 175, gc = 400
 % islet very hard to excite when coupling strength is high...
 taun = 30; % default: 20 
 sdpct = 10;
 
-gc(hub,:) = 0;
-gc(:,hub) = 0;
-% SILENCES (hub) cells
+% gc(hub,:) = 0;
+% gc(:,hub) = 0;
+ablated = 0; % truth value, 1=true 0=false
+% ABLATES (hub) cells
 
 % heterogeneous g, gca, gna
 G0 = 20;
@@ -115,22 +117,31 @@ rhs = @(t,y) iom17(t,y, gc, taun, G_array, gca_array, gna_array, ...
     lambda, sigma, dt, num_cells, hub);
 
 tic
-[t, y] = heuns(rhs, tspan, yinit, dt);
-disp("Solved!")
+[t0, y0] = heuns(rhs, tspan, yinit, dt);
+disp("Solved the first time!")
 toc
+
+% yinit = y0(end,:);
+% clear y0;
+% clear t0;
+% 
+% tic
+% [t, y] = heuns(rhs, tspan, yinit, dt);
+% disp("Solved the second time!")
+% toc
 
 addpath('/Users/eethb/Documents/MATLAB');
 
 % plot of the graph, vertex = cell, edge = coupling connection
-figure;
-colormap copper
-deg = degree(layout);
-nSizes = 2*sqrt(deg-min(deg)+0.2);
-nColors = deg;
-plot(layout,'MarkerSize',nSizes,'NodeCData',nColors,'EdgeAlpha',0.1, 'Nodelabel', 1:num_cells)
-title('Barabasi-Albert Islet with $N = 125$ nodes, $K = 3$, and $\beta = 0.9$', ...
-    'Interpreter','latex')
-colorbar
+% figure;
+% colormap copper
+% deg = degree(layout);
+% nSizes = 2*sqrt(deg-min(deg)+0.2);
+% nColors = deg;
+% plot(layout,'MarkerSize',nSizes,'NodeCData',nColors,'EdgeAlpha',0.1, 'Nodelabel', 1:num_cells)
+% title('Barabasi-Albert Islet with $N = 125$ nodes, $K = 3$, and $\beta = 0.9$', ...
+%     'Interpreter','latex')
+% colorbar
 
 % select 6 cells at random, plot Vm and C graphs
 to_graph = randperm(num_cells);
@@ -167,25 +178,27 @@ figure; % noise current graphs
 fig_noise = tiledlayout(3,3);
 for k = 1:6
     nexttile
-    plot(t/1000, y(:,8*to_graph(k)))
+    plot(t/1000, y(:,8*to_graph(k))/5300) % divide by Cm
     title(append('Noise - Cell ',string(to_graph(k))))
 end
 
 for j = 1:3 % plot hub cell noise
     nexttile
-    plot(t/1000,y(:,8*hub(j)))
+    plot(t/1000,y(:,8*hub(j))/5300)
     title(append('Noise - Cell ',string(hub(j))))
 end
 
 threshold = -45; % threshold that determines when a cell is idle/bursting, could be lower?
 % computes times at which the cells burst and the time since the first cell bursts
-[crossings, diff] = v_threshold(y,num_cells,threshold,gc,hub); 
-vbar = compute_vbar(y,num_cells); % computed average voltage of entire islet at each timestep
+[crossings, diff] = v_threshold(y,num_cells,threshold,hub,ablated); 
+vbar = compute_vbar(y,num_cells,ablated,hub); % computed average voltage of entire islet at each timestep
 figure; plot(t/1000,vbar); % plot vbar
+xlabel('time (s)')
+ylabel('V_{avg} (mV)')
 
 % create movie of bursting progression (black = not bursting, red =
 % bursting)
-M = plot_bursting(layout, y, num_cells, threshold, crossings, hub); 
+% M = plot_bursting(layout, y, num_cells, threshold, crossings, hub, ablated); 
 
 %===================================================================
 function [t, yout] = heuns(rhs, tspan, yinit, dt)
@@ -230,9 +243,6 @@ y = y';
 dydt = zeros(num_cells, num_vars);
 
 atot = 3000;
-% hub cells observed increase glucokinase rxn rate
-% TODO: figure out + implement different (better?) 
-% ways to hyperpolarize/silence cells
 vgk=0.005;
 
 kgk=8.0;
@@ -249,8 +259,8 @@ kadp=1;
 
 % heterogeneous gc
 
-% if t > 500000
-%     gc = 50;
+% if t = 400000
+%     gc = 25;
 % end
 
 v = y(:,1);
@@ -265,14 +275,19 @@ noise = y(:,8);
 
 atp = 0.5*(atot-adp + sqrt(adp*atot).*sqrt(-2+atot./adp-3*adp/atot));
 
+paren = @(x, varargin) x(varargin{:});
+
 %###########################
 %       Vector field	   #
 %###########################
 
-dydt(:,1) = -(ica(v, gca) + ina(v, n, gna) + ik(v,n) + ikca(c,v) + ikatp(adp,atp,v) ...
-         + noise - inbr(gc,v))/Cm; % v
+nbr_current = inbr(gc,v);
 
-% dydt(hub,1) = 0; % HYPERPOLARIZE (hub) cells
+dydt(:,1) = -(ica(v, gca) + ina(v, n, gna) + ik(v,n) + ikca(c,v) + ikatp(adp,atp,v) ...
+         + noise - nbr_current)/Cm; % v
+
+% dydt(hub,1) = 0; % ABLATES (hub) cells
+% dydt(hub,1) = nbr_current(hub)/Cm; % SILENCES (hub) cells
 
 dydt(:,2) = (ninf(v) - n)./taun; % n
 
@@ -479,12 +494,15 @@ function inbr = inbr(gc,v)
 end
 %===================================================================
 % computes the average value of v across all cells for each timestep
-function vbar = compute_vbar(y, num_cells)
+function vbar = compute_vbar(y, num_cells, ablated, hub)
     v_only = var_extract(y,num_cells, "v");
     vbar = NaN(length(y),1);
-
+    if ablated == 1
+        v_only(:,hub) = NaN;
+    end
+    
     for j = 1:length(y)
-        vbar(j) = mean(v_only(j,:));
+        vbar(j) = mean(v_only(j,:), 'omitnan');
     end
 end
 
@@ -531,9 +549,9 @@ function one_var = var_extract(y, num_cells, var)
 end
 
 %===================================================================
-function [crossings,diff] = v_threshold(y,num_cells, dta,gc,hub)
+function [crossings,diff] = v_threshold(y,num_cells,dta,hub,ablated)
     v = var_extract(y,num_cells,"v");
-    vbar = compute_vbar(y,num_cells);
+    vbar = compute_vbar(y,num_cells,ablated,hub);
     vbar_crosstime = find(vbar > dta, 1, "first");
     crossings = NaN(1, num_cells);
     for i = 1:num_cells
@@ -576,9 +594,9 @@ function [crossings,diff] = v_threshold(y,num_cells, dta,gc,hub)
         end
     end
 
-    if gc(hub,:) == 0
+    if ablated == 1
         crossings(hub) = NaN; % disregard hub cells that have been shut off
-        disp("Hub cells have been SILENCED")
+        disp("Hub cells have been ABLATED")
     end
     
     % identify first responder
@@ -596,6 +614,8 @@ function [crossings,diff] = v_threshold(y,num_cells, dta,gc,hub)
     
     figure; 
     histogram(diff(~isnan(diff)),'BinWidth', 0.02);
+    xlabel('Time since last bursting event (s)')
+    ylabel('Number of cells')
     
     % identify last responder
     [max_time, last_responder] = max(crossings);
@@ -637,7 +657,7 @@ end
 h = graph(s,t);
 end
 %===================================================================
-function M = plot_bursting(G, y, num_cells, threshold, crossings, hub)
+function M = plot_bursting(G, y, num_cells, threshold, crossings, hub, ablated)
 % TODO: ensure a movie can be made even if not all cells burst
     if all(isnan(crossings))
         disp("No movie made")
@@ -684,7 +704,10 @@ function M = plot_bursting(G, y, num_cells, threshold, crossings, hub)
         for cell = 1:num_cells
             if v(j,cell) > threshold
                 nColors(cell, 1) = 1; % red
-                nColors(hub,3) = 1; % ensures "quiet" hubs are a different color
+                nColors(cell, 2) = 0;
+                if ablated == 1
+                    nColors(hub,3) = 1; % ensures "quiet" hubs are a different color
+                end 
             end
         end
     
